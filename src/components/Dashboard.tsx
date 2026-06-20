@@ -14,17 +14,20 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { useRole } from '../context/RoleContext';
+import { useAuth } from '../context/AuthContext';
 
 const CHART_COLORS = ['#22C55E', '#22C55E', '#3B82F6', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#10B981'];
 
 export function Dashboard() {
   const { userRole } = useRole();
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
   const [clientsVendors, setClientsVendors] = useState<any[]>([]);
   const [budgets, setBudgets] = useState<any[]>([]);
 
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data: tx } = await supabase.from('transactions').select('*');
       if (tx) setTransactions(tx);
@@ -36,7 +39,7 @@ export function Dashboard() {
       if (bu) setBudgets(bu);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   const updateBudget = async (category: string, allocated: number) => {
     const b = budgets.find(b => b.category === category);
@@ -49,9 +52,15 @@ export function Dashboard() {
   const resetAllData = async () => {
     if (!window.confirm('This will re-seed all demo data. Proceed?')) return;
     try {
-      const res = await fetch('/api/reseed', { method: 'POST' });
+      const token = localStorage.getItem('vriddhi_auth_token');
+      const res = await fetch('/api/reseed', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok) {
         window.location.reload();
+      } else {
+        alert('Re-seed failed. Please log in again and retry.');
       }
     } catch {
       window.location.reload();
@@ -70,7 +79,7 @@ export function Dashboard() {
   const isWithinPeriod = (dateStr: string) => {
     if (!dateStr) return true;
     const targetDate = new Date(dateStr);
-    const now = new Date('2026-06-19'); // Consistent with additional metadata
+    const now = new Date();
 
     if (filterPeriod === 'all') return true;
     if (filterPeriod === 'this-month') {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -37,11 +38,22 @@ interface PaymentHistoryItem {
 }
 
 export function Settings() {
-  const [adminTab, setAdminTab] = useState<'billing' | 'notifications' | 'users' | 'contacts'>('billing');
+  const { user } = useAuth();
+  const [adminTab, setAdminTab] = useState<'billing' | 'notifications' | 'users' | 'contacts' | 'export'>(() => {
+    const saved = sessionStorage.getItem('vriddhi_settings_admin_tab');
+    if (saved === 'billing' || saved === 'notifications' || saved === 'users' || saved === 'contacts' || saved === 'export') {
+      sessionStorage.removeItem('vriddhi_settings_admin_tab');
+      return saved;
+    }
+    return 'billing';
+  });
   const [notificationLogs, setNotificationLogs] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [contactRequests, setContactRequests] = useState<any[]>([]);
-  const [notifStatus, setNotifStatus] = useState<{ email: boolean; telegram: boolean } | null>(null);
+  const [exportTransactions, setExportTransactions] = useState<any[]>([]);
+  const [exportInvoices, setExportInvoices] = useState<any[]>([]);
+  const [exportClients, setExportClients] = useState<any[]>([]);
+  const [notifStatus, setNotifStatus] = useState<{ email: boolean; telegram: boolean; whatsapp: boolean } | null>(null);
 
   const refreshContactRequests = async () => {
     const { data } = await supabase.from('contact_requests').select('*');
@@ -49,8 +61,18 @@ export function Settings() {
   };
 
   useEffect(() => {
-    fetch('/api/status').then(r => r.json()).then(d => setNotifStatus(d.notifications)).catch(() => {});
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(d => setNotifStatus(d.notifications))
+      .catch(() => {});
   }, []);
+
+  const refreshNotifStatus = () => {
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(d => setNotifStatus(d.notifications))
+      .catch(() => {});
+  };
 
   const refreshNotificationLogs = async () => {
     const { data: logs } = await supabase.from('notification_logs').select('*');
@@ -63,21 +85,88 @@ export function Settings() {
   };
 
   useEffect(() => {
+    if (!user?.uid) return;
     refreshNotificationLogs();
     refreshUsers();
     refreshContactRequests();
-  }, []);
+    Promise.all([
+      supabase.from('transactions').select('*'),
+      supabase.from('invoices').select('*'),
+      supabase.from('clients').select('*'),
+    ]).then(([tx, inv, cl]) => {
+      if (tx.data) setExportTransactions(tx.data);
+      if (inv.data) setExportInvoices(inv.data);
+      if (cl.data) setExportClients(cl.data);
+    });
+  }, [user?.uid]);
 
   useEffect(() => {
+    if (!user?.uid) return;
     if (adminTab === 'notifications') refreshNotificationLogs();
     if (adminTab === 'users') refreshUsers();
     if (adminTab === 'contacts') refreshContactRequests();
-  }, [adminTab]);
+    if (adminTab === 'export') {
+      Promise.all([
+        supabase.from('transactions').select('*'),
+        supabase.from('invoices').select('*'),
+        supabase.from('clients').select('*'),
+      ]).then(([tx, inv, cl]) => {
+        if (tx.data) setExportTransactions(tx.data);
+        if (inv.data) setExportInvoices(inv.data);
+        if (cl.data) setExportClients(cl.data);
+      });
+    }
+  }, [adminTab, user?.uid]);
 
   const deleteUser = async (userId: string) => {
     if (!confirm('Are you sure you want to remove this user?')) return;
     await supabase.from('users').delete().eq('id', userId);
     setAllUsers(prev => prev.filter(u => u.id !== userId));
+  };
+
+  const downloadCsv = (filename: string, content: string) => {
+    const blob = new Blob(["\uFEFF" + content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportLedgerCSV = () => {
+    let csv = 'Date,Voucher Type,Particulars,Debit,Credit,Narration\n';
+    exportTransactions.forEach((t) => {
+      const isDr = t.type === 'expense';
+      csv += `"${t.date}","${isDr ? 'Payment' : 'Receipt'}","${t.category || ''}",${isDr ? Math.abs(t.amount) : ''},${!isDr ? t.amount : ''},"${(t.description || '').replace(/"/g, '""')}"\n`;
+    });
+    downloadCsv(`Admin_Ledger_Export_${new Date().toISOString().split('T')[0]}.csv`, csv);
+  };
+
+  const exportTransactionsCSV = () => {
+    let csv = 'ID,Date,Description,Category,Type,Amount,Status,Due Date\n';
+    exportTransactions.forEach((t) => {
+      csv += `"${t.id}","${t.date}","${(t.description || '').replace(/"/g, '""')}","${t.category}","${t.type}",${t.amount},"${t.status}","${t.dueDate || ''}"\n`;
+    });
+    downloadCsv(`Admin_Transactions_${new Date().toISOString().split('T')[0]}.csv`, csv);
+  };
+
+  const exportInvoicesCSV = () => {
+    let csv = 'ID,Client ID,Date,Due Date,Status,Taxable,CGST,SGST,IGST,Total,Currency,Recurring\n';
+    exportInvoices.forEach((inv) => {
+      csv += `"${inv.id}","${inv.clientId}","${inv.date}","${inv.dueDate || ''}","${inv.status}",${inv.taxableAmount || 0},${inv.cgst || 0},${inv.sgst || 0},${inv.igst || 0},${inv.totalAmount || 0},"${inv.currency || 'INR'}",${inv.isRecurring ? 'Yes' : 'No'}\n`;
+    });
+    downloadCsv(`Admin_Invoices_${new Date().toISOString().split('T')[0]}.csv`, csv);
+  };
+
+  const exportClientsCSV = () => {
+    let csv = 'ID,Name,Type,GSTIN,Email,Phone,State,Address\n';
+    exportClients.forEach((c) => {
+      csv += `"${c.id}","${c.name}","${c.type}","${c.gstin}","${c.email}","${c.phone}","${c.state}","${(c.billingAddress || '').replace(/"/g, '""')}"\n`;
+    });
+    downloadCsv(`Admin_Clients_${new Date().toISOString().split('T')[0]}.csv`, csv);
   };
 
   const exportNotificationCSV = () => {
@@ -255,13 +344,61 @@ export function Settings() {
         >
           <Mail className="h-3.5 w-3.5" /> Contact Leads ({contactRequests.length})
         </button>
+        <button
+          onClick={() => setAdminTab('export')}
+          className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+            adminTab === 'export' ? 'bg-white dark:bg-zinc-800 text-[#111827] dark:text-zinc-100 shadow-sm' : 'text-[#6B7280] hover:text-[#111827]'
+          }`}
+        >
+          <Download className="h-3.5 w-3.5" /> Data Export
+        </button>
       </div>
 
       {notifStatus && (
-        <div className={`text-xs px-4 py-2 rounded-xl border ${notifStatus.email && notifStatus.telegram ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700' : 'bg-amber-500/10 border-amber-500/30 text-amber-700'}`}>
-          Notification channels: Email {notifStatus.email ? '● LIVE' : '○ simulated'} · Telegram {notifStatus.telegram ? '● LIVE' : '○ simulated'}
-          {!notifStatus.email && !notifStatus.telegram && ' — Configure SMTP_HOST and TELEGRAM_BOT_TOKEN in .env for live delivery'}
+        <div className={`text-xs px-4 py-2 rounded-xl border flex flex-wrap items-center justify-between gap-2 ${(notifStatus.email && notifStatus.whatsapp) ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400' : 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400'}`}>
+          <span>
+            Notification channels: Email {notifStatus.email ? '● LIVE' : '○ simulated'} · WhatsApp {notifStatus.whatsapp ? '● LIVE' : '○ simulated'}
+            {!notifStatus.email && !notifStatus.whatsapp && ' — Restart server after editing .env, or open http://localhost:3000 (Docker)'}
+          </span>
+          <button type="button" onClick={refreshNotifStatus} className="underline font-bold text-[10px] uppercase">Refresh status</button>
         </div>
+      )}
+
+      {/* Data Export Tab — Admin ledger vault */}
+      {adminTab === 'export' && (
+        <Card className="shadow-sm bg-white dark:bg-zinc-900 border-[#E5E7EB] dark:border-zinc-800">
+          <CardHeader className="py-4 border-b">
+            <CardTitle className="text-base font-bold flex items-center gap-2">
+              <Download className="h-4.5 w-4.5 text-[#22C55E]" />
+              Central Admin Data Export Vault
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Export all workspace data — transactions, invoices, clients, and Tally-compatible ledger CSV.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Button onClick={exportLedgerCSV} className="h-auto py-4 flex flex-col gap-2 bg-[#111827] hover:bg-gray-800 text-white dark:bg-[#22C55E] dark:hover:bg-[#16a34a] dark:text-black">
+              <Download className="h-5 w-5" />
+              <span className="text-xs font-bold">Tally Ledger CSV</span>
+              <span className="text-[10px] opacity-70">{exportTransactions.length} entries</span>
+            </Button>
+            <Button onClick={exportTransactionsCSV} variant="outline" className="h-auto py-4 flex flex-col gap-2">
+              <Download className="h-5 w-5 text-emerald-600" />
+              <span className="text-xs font-bold">Transactions CSV</span>
+              <span className="text-[10px] text-[#6B7280]">{exportTransactions.length} records</span>
+            </Button>
+            <Button onClick={exportInvoicesCSV} variant="outline" className="h-auto py-4 flex flex-col gap-2">
+              <Download className="h-5 w-5 text-indigo-600" />
+              <span className="text-xs font-bold">Invoices CSV</span>
+              <span className="text-[10px] text-[#6B7280]">{exportInvoices.length} records</span>
+            </Button>
+            <Button onClick={exportClientsCSV} variant="outline" className="h-auto py-4 flex flex-col gap-2">
+              <Download className="h-5 w-5 text-amber-600" />
+              <span className="text-xs font-bold">Clients/Vendors CSV</span>
+              <span className="text-[10px] text-[#6B7280]">{exportClients.length} records</span>
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/* Notification Logs Tab */}

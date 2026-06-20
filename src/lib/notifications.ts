@@ -17,7 +17,7 @@ export async function sendNotification(payload: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({
-      channels: ["Email", "Telegram"],
+      channels: ["Email", "WhatsApp"],
       ...payload,
     }),
   });

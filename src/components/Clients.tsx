@@ -7,35 +7,40 @@ import { Input } from '@/components/ui/input';
 import { Plus, Search, Trash2, Building, Mail, Phone, MapPin, Sparkles } from 'lucide-react';
 import { CustomSelect } from './ui/Select';
 import { Badge } from '@/components/ui/badge';
+import { useAuth } from '../context/AuthContext';
 
 export function Clients() {
+  const { user } = useAuth();
   const [clientsVendors, setClientsVendors] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
 
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data } = await supabase.from('clients').select('*');
       if (data) setClientsVendors(data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
   
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data } = await supabase.from('invoices').select('*');
       if (data) setInvoices(data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data } = await supabase.from('transactions').select('*');
       if (data) setTransactions(data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   const addClientVendor = async (cv: any) => {
     const { data } = await supabase.from('clients').insert(cv).select();

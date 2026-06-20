@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, AUTH_EXPIRED_EVENT } from '../lib/supabase';
 
 interface User {
   uid: string;
@@ -22,21 +22,67 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function parseSavedUser(raw: string): User | null {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const logout = () => {
+    setUser(null);
+    localStorage.removeItem('vriddhi_auth_user');
+    localStorage.removeItem('vriddhi_auth_token');
+    sessionStorage.removeItem('vriddhi_active_role');
+    sessionStorage.removeItem('vriddhi_active_tab');
+    supabase.auth.signOut();
+  };
+
   useEffect(() => {
-    const savedUser = localStorage.getItem('vriddhi_auth_user');
-    if (savedUser) {
+    async function restoreSession() {
+      const savedUser = localStorage.getItem('vriddhi_auth_user');
+      const token = localStorage.getItem('vriddhi_auth_token');
+
+      if (!savedUser || !token) {
+        setLoading(false);
+        return;
+      }
+
+      const parsed = parseSavedUser(savedUser);
+      if (!parsed) {
+        logout();
+        setLoading(false);
+        return;
+      }
+
       try {
-        setUser(JSON.parse(savedUser));
-      } catch (e) {
-        localStorage.removeItem('vriddhi_auth_user');
+        const res = await fetch('/api/db/users', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          setUser(parsed);
+        } else {
+          logout();
+        }
+      } catch {
+        // Offline — allow cached session
+        setUser(parsed);
+      } finally {
+        setLoading(false);
       }
     }
-    setLoading(false);
+
+    restoreSession();
+
+    const onExpired = () => setUser(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
 
   const login = async (email: string, password: string, role?: string) => {
@@ -46,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error: err } = await supabase.auth.signInWithPassword({
         email: email.toLowerCase(),
         password,
-        options: role ? { data: { role } } : undefined
+        options: role ? { data: { role } } : undefined,
       } as any);
 
       if (err) {
@@ -54,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!data?.user) {
-        throw new Error("No account found with this email. Please sign up to create your workspace.");
+        throw new Error('No account found with this email. Please sign up to create your workspace.');
       }
 
       const loggedUser: User = {
@@ -62,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: data.user.email,
         name: data.user.user_metadata?.name || '',
         companyName: data.user.user_metadata?.company_name || '',
-        role: data.user.user_metadata?.role as any,
+        role: data.user.user_metadata?.role as User['role'],
       };
 
       if (data.session?.access_token) {
@@ -72,27 +118,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(loggedUser);
       localStorage.setItem('vriddhi_auth_user', JSON.stringify(loggedUser));
     } catch (err: any) {
-      setError(err.message || "Failed to log in. Please try again.");
+      setError(err.message || 'Failed to log in. Please try again.');
       throw err;
     } finally {
       setLoading(false);
     }
   };
 
-  const signup = async (email: string, name: string, companyName: string, role: 'Founder' | 'Accountant' | 'Viewer') => {
+  const signup = async (
+    email: string,
+    name: string,
+    companyName: string,
+    role: 'Founder' | 'Accountant' | 'Viewer'
+  ) => {
     setError(null);
     setLoading(true);
     try {
       const { data, error: err } = await supabase.auth.signUp({
         email: email.toLowerCase(),
-        password: "defaultPassword123!", // Dummy password as we don't collect one in UI
+        password: 'defaultPassword123!',
         options: {
           data: {
             name,
             company_name: companyName,
-            role
-          }
-        }
+            role,
+          },
+        },
       });
 
       if (err) {
@@ -100,7 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!data?.user) {
-        throw new Error("Failed to register user. Try again.");
+        throw new Error('Failed to register user. Try again.');
       }
 
       const authenticatedUser: User = {
@@ -108,7 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: data.user.email,
         name: data.user.user_metadata?.name || name,
         companyName: data.user.user_metadata?.company_name || companyName,
-        role: data.user.user_metadata?.role as any || role,
+        role: (data.user.user_metadata?.role as User['role']) || role,
       };
 
       if (data.session?.access_token) {
@@ -118,7 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(authenticatedUser);
       localStorage.setItem('vriddhi_auth_user', JSON.stringify(authenticatedUser));
     } catch (err: any) {
-      setError(err.message || "Failed to register. Please check details.");
+      setError(err.message || 'Failed to register. Please check details.');
       throw err;
     } finally {
       setLoading(false);
@@ -136,15 +187,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         company_name: updated.companyName,
       }).eq('id', user.uid);
     } catch {}
-  };
-
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('vriddhi_auth_user');
-    localStorage.removeItem('vriddhi_auth_token');
-    sessionStorage.removeItem('vriddhi_active_role');
-    sessionStorage.removeItem('vriddhi_active_tab');
-    supabase.auth.signOut();
   };
 
   return (

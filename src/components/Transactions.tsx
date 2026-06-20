@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useRole } from '../context/RoleContext';
+import { useAuth } from '../context/AuthContext';
 import { CustomSelect } from './ui/Select';
 
 const INCOME_CATEGORIES = ['Product Sales', 'Services', 'Consulting', 'Other Income'];
@@ -48,24 +49,27 @@ export interface Transaction {
 
 export function Transactions() {
   const { userRole } = useRole();
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<any[]>([]);
   const [clientsVendors, setClientsVendors] = useState<any[]>([]);
   
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data } = await supabase.from('transactions').select('*').order('date', { ascending: false });
       if (data) setTransactions(data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const { data } = await supabase.from('clients').select('*');
       if (data) setClientsVendors(data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);

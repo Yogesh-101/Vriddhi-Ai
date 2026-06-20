@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { LayoutDashboard, Receipt, Users, Wallet, FileText, Settings as SettingsIcon, Bell, Search, BarChart3, Menu, Sun, Moon, ShieldAlert, Key, LogOut, HandCoins, Pencil, Check, X as XIcon } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Dashboard } from '@/components/Dashboard';
@@ -26,6 +26,86 @@ export default function App() {
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
   const [editCompany, setEditCompany] = useState(user?.companyName || '');
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [notificationLogs, setNotificationLogs] = useState<any[]>([]);
+  const [readNotifVersion, setReadNotifVersion] = useState(0);
+
+  const READ_NOTIF_KEY = 'vriddhi_read_notification_ids';
+
+  const getReadNotifIds = useCallback((): Set<string> => {
+    try {
+      const raw = localStorage.getItem(READ_NOTIF_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new Set();
+    }
+  }, []);
+
+  const markNotificationsRead = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    const read = getReadNotifIds();
+    ids.forEach((id) => read.add(id));
+    localStorage.setItem(READ_NOTIF_KEY, JSON.stringify([...read]));
+    setReadNotifVersion((v) => v + 1);
+  }, [getReadNotifIds]);
+
+  const fetchNotifications = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { data } = await supabase.from('notification_logs').select('*');
+      if (data) {
+        setNotificationLogs(
+          data.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        );
+      }
+    } catch {}
+  }, [user]);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
+  useEffect(() => {
+    if (!user) return;
+    const onFocus = () => fetchNotifications();
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(fetchNotifications, 60000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
+  }, [user, fetchNotifications]);
+
+  const recentNotifications = useMemo(() => notificationLogs.slice(0, 8), [notificationLogs]);
+
+  const hasUnreadNotifications = useMemo(() => {
+    const read = getReadNotifIds();
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return notificationLogs.some((log) => {
+      const ts = new Date(log.timestamp).getTime();
+      return ts >= cutoff && !read.has(log.id);
+    });
+  }, [notificationLogs, getReadNotifIds, readNotifVersion]);
+
+  const toggleNotifPanel = () => {
+    setIsUserMenuOpen(false);
+    setIsNotifOpen((open) => {
+      if (!open) {
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const unreadIds = notificationLogs
+          .filter((log) => new Date(log.timestamp).getTime() >= cutoff)
+          .map((log) => log.id);
+        markNotificationsRead(unreadIds);
+      }
+      return !open;
+    });
+  };
+
+  const openAllNotifications = () => {
+    setIsNotifOpen(false);
+    sessionStorage.setItem('vriddhi_settings_admin_tab', 'notifications');
+    setActiveTab('settings');
+  };
 
   // Sync role with auth user's role only on initial login (not on every render)
   useEffect(() => {
@@ -51,6 +131,7 @@ export default function App() {
   const [invoices, setInvoices] = useState<any[]>([]);
 
   useEffect(() => {
+    if (!user) return;
     const fetchData = async () => {
       try {
         const [txRes, invRes] = await Promise.all([
@@ -62,7 +143,7 @@ export default function App() {
       } catch {}
     };
     fetchData();
-  }, []);
+  }, [user?.uid]);
 
   const currentMetrics = useMemo(() => {
     const fmt = (n: number) => `₹${Math.abs(n).toLocaleString('en-IN')}`;
@@ -206,13 +287,96 @@ export default function App() {
             </div>
           </div>
           <div className="ml-4 flex items-center md:ml-6 space-x-4">
-            <button className="p-1.5 text-[#6B7280] dark:text-zinc-400 hover:text-[#111827] dark:hover:text-zinc-100 transition-colors relative">
-              <span className="absolute top-1 right-1.5 h-2 w-2 bg-[#22C55E] rounded-full border-2 border-white dark:border-zinc-900"></span>
-              <Bell className="h-5 w-5" />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={toggleNotifPanel}
+                className="p-1.5 text-[#6B7280] dark:text-zinc-400 hover:text-[#111827] dark:hover:text-zinc-100 transition-colors relative"
+                aria-label="Notifications"
+                aria-expanded={isNotifOpen}
+              >
+                {hasUnreadNotifications && (
+                  <span className="absolute top-1 right-1.5 h-2 w-2 bg-[#22C55E] rounded-full border-2 border-white dark:border-zinc-900" />
+                )}
+                <Bell className="h-5 w-5" />
+              </button>
+
+              {isNotifOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsNotifOpen(false)} />
+                  <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white dark:bg-zinc-900 border border-[#E5E7EB] dark:border-zinc-800 rounded-2xl shadow-2xl z-50 animate-in fade-in-50 slide-in-from-top-3 duration-200 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100 dark:border-zinc-800/60 flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-[#111827] dark:text-zinc-100">Notifications</div>
+                        <div className="text-[10px] text-[#6B7280] dark:text-zinc-400">Recent activity from the last 24 hours</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => fetchNotifications()}
+                        className="text-[10px] font-bold uppercase text-[#6B7280] dark:text-zinc-400 hover:text-[#111827] dark:hover:text-zinc-100"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+
+                    <div className="max-h-80 overflow-y-auto">
+                      {recentNotifications.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-xs text-[#6B7280] dark:text-zinc-400">
+                          No notifications yet
+                        </div>
+                      ) : (
+                        recentNotifications.map((log) => (
+                          <div
+                            key={log.id}
+                            className="px-4 py-3 border-b border-gray-50 dark:border-zinc-800/60 hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                                log.type === 'delivery' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' :
+                                log.type === 'reminder' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
+                                log.type === 'escalation' ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' :
+                                'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                              }`}>
+                                {log.type}
+                              </span>
+                              <span className={`text-[10px] font-bold shrink-0 ${log.simulated ? 'text-amber-500' : 'text-emerald-500'}`}>
+                                {log.simulated ? 'SIMULATED' : '● LIVE'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-[#111827] dark:text-zinc-200 leading-relaxed line-clamp-2">
+                              {log.message}
+                            </p>
+                            <div className="mt-1.5 flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-[#6B7280] dark:text-zinc-500 truncate">
+                                {log.clientName || log.destination || 'System'}
+                              </span>
+                              <span className="text-[10px] font-mono text-[#6B7280] dark:text-zinc-500 shrink-0">
+                                {new Date(log.timestamp).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {userRole === 'Founder' && (
+                      <div className="px-4 py-2.5 border-t border-gray-100 dark:border-zinc-800/60 bg-gray-50/50 dark:bg-zinc-950/50">
+                        <button
+                          type="button"
+                          onClick={openAllNotifications}
+                          className="w-full text-xs font-semibold text-[#22C55E] hover:text-[#16a34a] transition-colors text-center"
+                        >
+                          View all notifications →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
             <div className="relative">
               <div 
-                onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                onClick={() => { setIsNotifOpen(false); setIsUserMenuOpen(!isUserMenuOpen); }}
                 className="flex items-center gap-3 cursor-pointer p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors select-none"
                 title="Profile & settings"
               >

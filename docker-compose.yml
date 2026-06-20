@@ -3,6 +3,8 @@ services:
     build: .
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -15,6 +17,10 @@ services:
       - SMTP_FROM=${SMTP_FROM:-Vriddhi.Ai <noreply@vriddhi.ai>}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM:-}
+      - TWILIO_WHATSAPP_DEFAULT_TO=${TWILIO_WHATSAPP_DEFAULT_TO:-}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - APP_URL=${APP_URL:-http://localhost:3000}
     volumes:

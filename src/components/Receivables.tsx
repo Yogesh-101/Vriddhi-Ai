@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useRole } from '../context/RoleContext';
+import { useAuth } from '../context/AuthContext';
 import {
   ArrowDownLeft, ArrowUpRight, Calendar, CheckCircle, Clock, AlertTriangle,
   Search, Filter, Download, IndianRupee, Users, TrendingUp, Eye
@@ -13,6 +14,7 @@ import { CustomSelect } from './ui/Select';
 
 export function Receivables() {
   const { userRole } = useRole();
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
@@ -21,6 +23,7 @@ export function Receivables() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'partially_paid' | 'paid' | 'overdue'>('all');
 
   useEffect(() => {
+    if (!user) return;
     async function load() {
       const [txRes, invRes, clRes] = await Promise.all([
         supabase.from('transactions').select('*').order('date', { ascending: false }),
@@ -32,7 +35,7 @@ export function Receivables() {
       if (clRes.data) setClients(clRes.data);
     }
     load();
-  }, []);
+  }, [user?.uid]);
 
   const receivableItems = useMemo(() => {
     const items: any[] = [];

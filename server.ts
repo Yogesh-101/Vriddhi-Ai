@@ -110,7 +110,7 @@ async function startServer() {
       const results = await dispatchNotifications({
         type: "contact",
         message: `New demo request from ${name} (${email}) at ${company || "N/A"}:\n\n${message}`,
-        channels: ["Email", "Telegram"],
+        channels: ["Email", "WhatsApp"],
         recipientEmail: process.env.ADMIN_EMAIL || email,
         clientName: name,
       });
@@ -166,13 +166,44 @@ async function startServer() {
     }
   });
 
+  app.post("/api/notifications/test-whatsapp", authenticateToken, async (req, res) => {
+    try {
+      const phone = req.body?.recipientPhone || process.env.TWILIO_WHATSAPP_DEFAULT_TO;
+      if (!phone) {
+        return res.status(400).json({
+          error: "Pass recipientPhone or set TWILIO_WHATSAPP_DEFAULT_TO in .env (your sandbox-joined number).",
+        });
+      }
+
+      const results = await dispatchNotifications({
+        type: "welcome",
+        message: `WhatsApp test from Vriddhi.Ai at ${new Date().toISOString()}. Sandbox delivery confirmed.`,
+        channels: ["WhatsApp"],
+        recipientPhone: phone,
+        clientName: "WhatsApp Test",
+      });
+
+      const waResult = results.find((r) => r.channel === "WhatsApp");
+      res.json({
+        data: {
+          recipient: phone,
+          configured: notificationsLiveStatus().whatsapp,
+          result: waResult,
+        },
+        error: waResult?.status === "failed" ? waResult.detail : null,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/notifications/send", authenticateToken, async (req, res) => {
     try {
       const { type, message, channels, recipientEmail, recipientPhone, invoiceId, clientName } = req.body;
       const results = await dispatchNotifications({
         type: type || "delivery",
         message,
-        channels: channels || ["Email", "Telegram"],
+        channels: channels || ["Email", "WhatsApp"],
         recipientEmail,
         recipientPhone,
         invoiceId,
@@ -246,7 +277,7 @@ async function startServer() {
     dispatchNotifications({
       type: "welcome",
       message: `Welcome ${user.name}! Your Vriddhi.Ai workspace for ${user.company_name || 'your company'} is ready. Role: ${user.role}.`,
-      channels: ["Email", "Telegram"],
+      channels: ["Email", "WhatsApp"],
       recipientEmail: user.email,
       clientName: user.name,
     }).then((results) => {

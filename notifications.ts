@@ -25,13 +25,51 @@ const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM = process.env.SMTP_FROM || "Vriddhi.Ai <noreply@vriddhi.ai>";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM || "";
+const TWILIO_WHATSAPP_DEFAULT_TO = process.env.TWILIO_WHATSAPP_DEFAULT_TO || "";
+
+function isPlaceholder(value: string) {
+  return !value || /your_|placeholder|xxx|<.*>/i.test(value);
+}
 
 function emailConfigured() {
   return Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
 }
 
 function telegramConfigured() {
-  return Boolean(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
+  return Boolean(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && !isPlaceholder(TELEGRAM_BOT_TOKEN));
+}
+
+function whatsappConfigured() {
+  return Boolean(
+    TWILIO_ACCOUNT_SID &&
+      TWILIO_AUTH_TOKEN &&
+      TWILIO_WHATSAPP_FROM &&
+      !isPlaceholder(TWILIO_ACCOUNT_SID) &&
+      TWILIO_WHATSAPP_FROM.startsWith("whatsapp:")
+  );
+}
+
+/** Normalize client phone to Twilio whatsapp:+E164 format */
+export function normalizeWhatsAppNumber(phone: string): string | null {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 10) return `whatsapp:+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `whatsapp:+${digits}`;
+  return `whatsapp:+${digits}`;
+}
+
+function resolveWhatsAppTo(recipientPhone?: string): string | null {
+  const fromClient = recipientPhone ? normalizeWhatsAppNumber(recipientPhone) : null;
+  if (fromClient) return fromClient;
+  if (TWILIO_WHATSAPP_DEFAULT_TO) {
+    return TWILIO_WHATSAPP_DEFAULT_TO.startsWith("whatsapp:")
+      ? TWILIO_WHATSAPP_DEFAULT_TO
+      : normalizeWhatsAppNumber(TWILIO_WHATSAPP_DEFAULT_TO);
+  }
+  return null;
 }
 
 async function sendEmail(to: string, subject: string, body: string): Promise<SendResult> {
@@ -95,6 +133,60 @@ async function sendTelegram(text: string): Promise<SendResult> {
   }
 }
 
+async function sendWhatsApp(body: string, recipientPhone?: string): Promise<SendResult> {
+  if (!whatsappConfigured()) {
+    return {
+      channel: "WhatsApp",
+      status: "simulated",
+      detail: `[SIMULATED] WhatsApp to ${recipientPhone || "client"}: ${body.slice(0, 80)}...`,
+    };
+  }
+
+  const to = resolveWhatsAppTo(recipientPhone);
+  if (!to) {
+    return {
+      channel: "WhatsApp",
+      status: "failed",
+      detail: "No valid WhatsApp recipient. Set client phone or TWILIO_WHATSAPP_DEFAULT_TO in .env",
+    };
+  }
+
+  try {
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+    const params = new URLSearchParams({
+      From: TWILIO_WHATSAPP_FROM,
+      To: to,
+      Body: body.slice(0, 1600),
+    });
+
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      }
+    );
+
+    const json = await res.json();
+    if (!res.ok) {
+      const errMsg = json.message || json.error_message || "Twilio WhatsApp API error";
+      return { channel: "WhatsApp", status: "failed", detail: errMsg };
+    }
+
+    return {
+      channel: "WhatsApp",
+      status: "delivered",
+      detail: `WhatsApp sent to ${to} (SID: ${json.sid || "ok"})`,
+    };
+  } catch (err: any) {
+    return { channel: "WhatsApp", status: "failed", detail: err.message || "WhatsApp send failed" };
+  }
+}
+
 function buildSubject(input: SendNotificationInput): string {
   switch (input.type) {
     case "delivery":
@@ -125,11 +217,7 @@ export async function dispatchNotifications(input: SendNotificationInput): Promi
       const tgText = `<b>Vriddhi.Ai</b>\n${input.clientName ? `<i>${input.clientName}</i>\n` : ""}${body}`;
       results.push(await sendTelegram(tgText));
     } else if (channel === "WhatsApp") {
-      results.push({
-        channel: "WhatsApp",
-        status: "simulated",
-        detail: `[SIMULATED] WhatsApp to ${input.recipientPhone || "client"}: ${body.slice(0, 80)}...`,
-      });
+      results.push(await sendWhatsApp(body, input.recipientPhone));
     }
   }
 
@@ -140,6 +228,6 @@ export function notificationsLiveStatus() {
   return {
     email: emailConfigured(),
     telegram: telegramConfigured(),
-    whatsapp: false,
+    whatsapp: whatsappConfigured(),
   };
 }
