@@ -1,0 +1,6 @@
+{
+  "name": "Vriddhi Capital AI",
+  "description": "AI-Powered Financial Tracking & GST Invoicing Platform for Indian SMBs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

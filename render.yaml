@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: vriddhi-ai
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: Vriddhi.Ai <noreply@vriddhi.ai>
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: APP_URL
+        sync: false
+    disk:
+      name: vriddhi-data
+      mountPath: /app/data
+      sizeGB: 1
