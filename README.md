@@ -4,7 +4,8 @@
 
 Vriddhi.Ai is a production-ready finance copilot built for **Track 3 — Vriddhi Capital Hackathon**. It helps startups and small businesses track profit & loss, manage receivables and payables, generate GST-compliant invoices, and automate client communications via Email and WhatsApp — with an AI assistant that drafts invoices, audits compliance, categorizes bank imports, and executes finance actions from natural language.
 
-**Live demo (set after deploy):** `https://your-deployed-url.com`  
+**Live demo:** https://vriddhi-ai.onrender.com  
+**App login:** https://vriddhi-ai.onrender.com/login  
 **Repository:** [github.com/Yogesh-101/Vriddhi-Ai](https://github.com/Yogesh-101/Vriddhi-Ai)
 
 ---
@@ -211,7 +212,7 @@ Create `.env` in the project root. **Never commit this file.**
 | `GEMINI_API_KEY` | Recommended | Google AI Studio API key ([get one here](https://aistudio.google.com/apikey)). Format: `AIzaSy...` |
 | `GEMINI_MODEL` | No | Default: `gemini-2.0-flash` |
 | `JWT_SECRET` | Yes | Secret for signing session tokens. Use a long random string in production. |
-| `APP_URL` | Yes (prod) | Public URL of deployed app (e.g. `https://vriddhi-ai.onrender.com`) |
+| `APP_URL` | Yes (prod) | Public URL of deployed app — **https://vriddhi-ai.onrender.com** |
 | `DATABASE_PATH` | No | Default: `./data/vriddhi.db` |
 | `PORT` | No | Default: `3000` |
 | `SMTP_HOST` | For live email | e.g. `smtp.gmail.com` |
@@ -257,12 +258,13 @@ TWILIO_WHATSAPP_DEFAULT_TO=whatsapp:+916305080611
 
 | Page | Path | Auth |
 |------|------|------|
-| Public homepage | `/` | None |
-| Login / Signup | `/login` | None |
-| App workspace | `/app` | JWT required |
+| **Live homepage** | [https://vriddhi-ai.onrender.com/](https://vriddhi-ai.onrender.com/) | None |
+| Public homepage (local) | `/` | None |
+| Login / Signup | [https://vriddhi-ai.onrender.com/login](https://vriddhi-ai.onrender.com/login) | None |
+| App workspace | [https://vriddhi-ai.onrender.com/app](https://vriddhi-ai.onrender.com/app) | JWT required |
 | Admin panel | `/app` → **Settings** tab | Founder role only |
-| Health check | `/api/health` | None |
-| System status | `/api/status` | None |
+| Health check | [https://vriddhi-ai.onrender.com/api/health](https://vriddhi-ai.onrender.com/api/health) | None |
+| System status | [https://vriddhi-ai.onrender.com/api/status](https://vriddhi-ai.onrender.com/api/status) | None |
 
 ### Pre-seeded accounts
 
@@ -444,7 +446,7 @@ The repo includes `render.yaml` for one-click blueprint deployment.
 1. Push to GitHub
 2. Create a new **Web Service** on [Render](https://render.com) → connect repo → **Docker** runtime
 3. Set all environment variables from the table above
-4. Set `APP_URL` to your Render service URL (e.g. `https://vriddhi-ai.onrender.com`)
+4. Set `APP_URL` to your Render service URL (live: **https://vriddhi-ai.onrender.com**)
 5. Attach a **persistent disk** mounted at `/app/data` (1 GB minimum)
 6. Set health check path to `/api/health`
 
@@ -492,7 +494,7 @@ Data persists in the `vriddhi_data` Docker volume.
 | General Rule | Status |
 |--------------|--------|
 | Production-ready deployable product | ✅ Docker + production build |
-| Live public URL | ⚠️ Deploy and set `APP_URL` |
+| Live public URL | ✅ [https://vriddhi-ai.onrender.com](https://vriddhi-ai.onrender.com) |
 | Real SQLite database with persistence | ✅ |
 | Preloaded sample data on every entity | ✅ Auto-seed |
 | Forms submit and persist | ✅ Contact, signup, all CRUD |
