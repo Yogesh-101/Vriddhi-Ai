@@ -1,18 +1,32 @@
+# Render Blueprint — Vriddhi.Ai (Free Tier)
+# Deploy: Dashboard → Blueprints → New Blueprint Instance → connect GitHub repo
+#
+# Free tier notes:
+# - No persistent disk (SQLite re-seeds from db.json when empty on each deploy)
+# - SMTP ports 587/465 blocked — Email simulates; WhatsApp (Twilio HTTPS) works live
+# - Set secret env vars in Render dashboard after first deploy
+
 services:
   - type: web
     name: vriddhi-ai
     runtime: docker
     plan: free
+    region: singapore
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
+      # Keep fixed so demo credentials (password123) match seed hashes
       - key: JWT_SECRET
-        generateValue: true
+        value: vriddhi_super_secret_jwt_key_2026
+      - key: DATABASE_PATH
+        value: /app/data/vriddhi.db
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.0-flash
+      - key: APP_URL
+        sync: false
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
@@ -23,15 +37,17 @@ services:
         sync: false
       - key: SMTP_FROM
         value: Vriddhi.Ai <noreply@vriddhi.ai>
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: TWILIO_WHATSAPP_DEFAULT_TO
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: ADMIN_EMAIL
-        sync: false
-      - key: APP_URL
-        sync: false
-    disk:
-      name: vriddhi-data
-      mountPath: /app/data
-      sizeGB: 1
