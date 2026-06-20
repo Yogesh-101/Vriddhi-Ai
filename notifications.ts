@@ -10,6 +10,12 @@ export interface SendNotificationInput {
   recipientPhone?: string;
   invoiceId?: string;
   clientName?: string;
+  /** Full email body (falls back to message) */
+  emailBody?: string;
+  /** Short WhatsApp body (falls back to message) */
+  whatsappBody?: string;
+  /** Override email subject */
+  subject?: string;
 }
 
 export interface SendResult {
@@ -205,19 +211,20 @@ function buildSubject(input: SendNotificationInput): string {
 }
 
 export async function dispatchNotifications(input: SendNotificationInput): Promise<SendResult[]> {
-  const subject = buildSubject(input);
-  const body = input.message;
+  const subject = input.subject || buildSubject(input);
+  const emailBody = input.emailBody || input.message;
+  const whatsappBody = input.whatsappBody || input.message;
   const results: SendResult[] = [];
 
   for (const channel of input.channels) {
     if (channel === "Email") {
       const to = input.recipientEmail || process.env.ADMIN_EMAIL || "admin@vriddhi.ai";
-      results.push(await sendEmail(to, subject, body));
+      results.push(await sendEmail(to, subject, emailBody));
     } else if (channel === "Telegram") {
-      const tgText = `<b>Vriddhi.Ai</b>\n${input.clientName ? `<i>${input.clientName}</i>\n` : ""}${body}`;
+      const tgText = `<b>Vriddhi.Ai</b>\n${input.clientName ? `<i>${input.clientName}</i>\n` : ""}${whatsappBody}`;
       results.push(await sendTelegram(tgText));
     } else if (channel === "WhatsApp") {
-      results.push(await sendWhatsApp(body, input.recipientPhone));
+      results.push(await sendWhatsApp(whatsappBody, input.recipientPhone));
     }
   }
 

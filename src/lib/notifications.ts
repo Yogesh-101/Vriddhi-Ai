@@ -8,6 +8,9 @@ export async function sendNotification(payload: {
   recipientPhone?: string;
   invoiceId?: string;
   clientName?: string;
+  emailBody?: string;
+  whatsappBody?: string;
+  subject?: string;
 }) {
   const token = localStorage.getItem("vriddhi_auth_token");
   const response = await fetch("/api/notifications/send", {

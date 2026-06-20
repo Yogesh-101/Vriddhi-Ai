@@ -16,6 +16,20 @@ import {
   seedDatabase,
 } from "./database";
 import { dispatchNotifications, notificationsLiveStatus } from "./notifications";
+import {
+  buildDemoCopilotResponse,
+  enhanceGstAuditWithAi,
+  geminiCategorizeRows,
+  geminiInvoiceDraft,
+  geminiReminderCompose,
+  ruleBasedCategorizeRows,
+  ruleBasedGstAudit,
+  ruleBasedInvoiceDraft,
+  ruleBasedReminderCompose,
+  parseGeminiJson,
+  type CopilotResponse,
+  GEMINI_MODEL,
+} from "./ai-services";
 
 const _require = createRequire(path.join(process.cwd(), "package.json"));
 
@@ -77,6 +91,8 @@ async function startServer() {
       status: "ok",
       database: "sqlite",
       notifications: notificationsLiveStatus(),
+      ai: Boolean(ai),
+      aiModel: GEMINI_MODEL,
       appUrl: process.env.APP_URL || null,
     });
   });
@@ -199,7 +215,7 @@ async function startServer() {
 
   app.post("/api/notifications/send", authenticateToken, async (req, res) => {
     try {
-      const { type, message, channels, recipientEmail, recipientPhone, invoiceId, clientName } = req.body;
+      const { type, message, channels, recipientEmail, recipientPhone, invoiceId, clientName, emailBody, whatsappBody, subject } = req.body;
       const results = await dispatchNotifications({
         type: type || "delivery",
         message,
@@ -208,6 +224,9 @@ async function startServer() {
         recipientPhone,
         invoiceId,
         clientName,
+        emailBody,
+        whatsappBody,
+        subject,
       });
 
       const logs = results.map((r, i) => ({
@@ -357,7 +376,7 @@ async function startServer() {
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: GEMINI_MODEL,
         contents: [
           {
             inlineData: {
@@ -386,107 +405,289 @@ async function startServer() {
     }
   });
 
-  function buildDemoResponse(query: string, metrics: any): { answer: string; navigateTo: string | null } {
-    const norm = (query || "").toLowerCase();
-
-    let navigateTo: string | null = null;
-    if (norm.includes('dashboard') || norm.includes('overview') || norm.includes('home') || norm.includes('main')) {
-      navigateTo = 'dashboard';
-    } else if (norm.includes('invoice') || norm.includes('gst') || norm.includes('billing')) {
-      navigateTo = 'invoices';
-    } else if (norm.includes('transaction') || norm.includes('ledger') || norm.includes('spend')) {
-      navigateTo = 'transactions';
-    } else if (norm.includes('receivable') || norm.includes('payable') || norm.includes('outstanding') || norm.includes('dues')) {
-      navigateTo = 'receivables';
-    } else if (norm.includes('client') || norm.includes('vendor') || norm.includes('customer')) {
-      navigateTo = 'clients';
-    } else if (norm.includes('settings') || norm.includes('admin panel') || norm.includes('preference')) {
-      navigateTo = 'settings';
-    } else if (norm.includes('forecast') || norm.includes('cash flow') || norm.includes('runway') || norm.includes('projection')) {
-      navigateTo = 'reports';
-    } else if (norm.includes('ocr') || norm.includes('document') || norm.includes('scan') || norm.includes('receipt')) {
-      navigateTo = 'documents';
+  const optionalAuth = (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+    if (token) {
+      try {
+        (req as any).user = jwt.verify(token, JWT_SECRET);
+      } catch {
+        /* guest copilot */
+      }
     }
+    next();
+  };
 
-    const rev = metrics?.revenue || "N/A";
-    const exp = metrics?.expenses || "N/A";
-    const prof = metrics?.profit || "N/A";
-    const recv = metrics?.receivables || "N/A";
-
-    let answer: string;
-    if (norm.includes('revenue') && norm.includes('profit')) {
-      answer = `Your current revenue is **${rev}** and net profit is **${prof}**. Healthy margins indicate strong business performance this quarter.`;
-    } else if (norm.includes('revenue')) {
-      answer = `Your current revenue stands at **${rev}**. This reflects consistent growth across your client base.`;
-    } else if (norm.includes('profit')) {
-      answer = `Your net profit is **${prof}** (Revenue: ${rev}, Expenses: ${exp}). Your profit margin is healthy.`;
-    } else if (norm.includes('expense') || norm.includes('spending') || norm.includes('cost')) {
-      answer = `Your total expenses are **${exp}** against revenue of ${rev}. I'd recommend reviewing recurring costs for optimization.`;
-    } else if (norm.includes('receivable') || norm.includes('payable') || norm.includes('outstanding') || norm.includes('dues')) {
-      answer = `Outstanding receivables total **${recv}**. Consider following up on overdue invoices to improve cash flow.`;
-    } else if (navigateTo) {
-      answer = `Navigating you to the ${navigateTo} workspace now.`;
-    } else {
-      answer = `Here's your financial snapshot — Revenue: **${rev}**, Expenses: **${exp}**, Profit: **${prof}**, Receivables: **${recv}**. Ask me about any specific metric for deeper insights!`;
+  async function composeReminderMessages(ctx: Parameters<typeof ruleBasedReminderCompose>[0]) {
+    if (ai) {
+      return geminiReminderCompose(ai, ctx);
     }
-
-    return { answer, navigateTo };
+    return ruleBasedReminderCompose(ctx);
   }
 
-  app.post("/api/copilot", async (req, res) => {
+  async function executeCopilotAction(
+    action: { type: string; params?: Record<string, unknown> },
+    _user: { id?: string; email?: string; role?: string } | undefined
+  ): Promise<{ summary: string; details: unknown[] }> {
+    const invoices = readTable("invoices");
+    const clients = readTable("clients");
+    const logs = readTable("notification_logs");
+    const now = new Date();
+    const details: unknown[] = [];
+
+    if (action.type === "mark_invoice_paid") {
+      const invoiceId = String(action.params?.invoiceId || "");
+      const inv = invoices.find((i: any) => i.id === invoiceId);
+      if (!inv) {
+        return { summary: `Invoice **${invoiceId}** not found.`, details: [] };
+      }
+      updateRecords("invoices", "id", invoiceId, { status: "Paid" });
+      return { summary: `Invoice **${invoiceId}** marked as Paid.`, details: [{ invoiceId, status: "Paid" }] };
+    }
+
+    if (action.type === "send_overdue_reminders") {
+      const minAmount = Number(action.params?.minAmount || 0);
+      let sent = 0;
+      for (const inv of invoices) {
+        const isOverdue =
+          inv.status === "Overdue" ||
+          (inv.status === "Sent" && inv.dueDate && new Date(inv.dueDate) < now);
+        if (!isOverdue) continue;
+        if ((inv.totalAmount || 0) < minAmount) continue;
+
+        const alreadySent = logs.some(
+          (log: any) =>
+            log.invoiceId === inv.id &&
+            (log.type === "reminder" || log.type === "escalation") &&
+            new Date(log.timestamp).toDateString() === now.toDateString()
+        );
+        if (alreadySent) continue;
+
+        const client = clients.find((c: any) => c.id === inv.clientId);
+        const daysOverdue = inv.dueDate
+          ? Math.max(0, Math.floor((now.getTime() - new Date(inv.dueDate).getTime()) / 86400000))
+          : 0;
+        const priorEsc = logs.filter((l: any) => l.invoiceId === inv.id && l.type === "escalation").length;
+        const level = Math.min(priorEsc + 1, 3);
+        const notifType = level >= 2 ? "escalation" : "reminder";
+
+        const composed = await composeReminderMessages({
+          type: notifType as "reminder" | "escalation",
+          level,
+          invoiceId: inv.id,
+          clientName: client?.name || "Client",
+          amount: inv.totalAmount || 0,
+          dueDate: inv.dueDate,
+          daysOverdue,
+        });
+
+        const results = await dispatchNotifications({
+          type: notifType as "reminder" | "escalation",
+          message: composed.emailBody,
+          emailBody: composed.emailBody,
+          whatsappBody: composed.whatsappBody,
+          subject: composed.subject,
+          channels: ["Email", "WhatsApp", "Telegram"],
+          recipientEmail: client?.email,
+          recipientPhone: client?.phone,
+          invoiceId: inv.id,
+          clientName: client?.name || "Client",
+        });
+
+        const logEntries = results.map((r, i) => ({
+          id: `ntf-copilot-${Date.now()}-${sent}-${i}`,
+          timestamp: now.toISOString(),
+          type: notifType,
+          invoiceId: inv.id,
+          clientName: client?.name || "Client",
+          message: r.detail,
+          destination: r.channel,
+          status: r.status === "delivered" ? "delivered" : r.status,
+          simulated: r.status === "simulated",
+          aiComposed: composed.aiEnhanced,
+        }));
+        insertRecords("notification_logs", logEntries);
+        sent++;
+        details.push({ invoiceId: inv.id, level, channels: results.map((r) => r.status) });
+      }
+      return {
+        summary:
+          sent > 0
+            ? `Dispatched **${sent}** AI-composed payment reminder(s) for overdue invoices${minAmount > 0 ? ` above ₹${minAmount.toLocaleString("en-IN")}` : ""}.`
+            : "No qualifying overdue invoices found (or reminders already sent today).",
+        details,
+      };
+    }
+
+    return { summary: "", details: [] };
+  }
+
+  // AI: GST compliance audit
+  app.post("/api/ai/gst-audit", authenticateToken, async (req, res) => {
     try {
-      const { query, metrics } = req.body;
+      const invoice = req.body?.invoice || req.body;
+      let result = ruleBasedGstAudit(invoice);
+      if (ai && req.body?.enhance !== false) {
+        result = await enhanceGstAuditWithAi(ai, invoice, result);
+      }
+      res.json({ data: result, error: null });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // AI: Natural language invoice draft
+  app.post("/api/ai/invoice-draft", authenticateToken, async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query?.trim()) {
+        return res.status(400).json({ error: "Query is required." });
+      }
+      const clients = readTable("clients");
+      let draft: InvoiceDraft | null = null;
+      if (ai) {
+        draft = await geminiInvoiceDraft(ai, query, clients);
+      }
+      if (!draft?.items?.length) {
+        draft = ruleBasedInvoiceDraft(query, clients);
+      }
+      res.json({
+        data: draft,
+        fallback: !ai || !draft?.notes?.includes("Gemini"),
+        error: draft ? null : "Could not parse invoice request.",
+      });
+    } catch (e: any) {
+      const clients = readTable("clients");
+      const draft = ruleBasedInvoiceDraft(req.body?.query || "", clients);
+      res.json({ data: draft, fallback: true, error: draft ? null : e.message });
+    }
+  });
+
+  // AI: Smart CSV categorization
+  app.post("/api/ai/categorize-csv", authenticateToken, async (req, res) => {
+    try {
+      const rows = req.body?.rows;
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ error: "rows array is required." });
+      }
+      let categorized = ruleBasedCategorizeRows(rows);
+      let aiEnhanced = false;
+      if (ai) {
+        try {
+          categorized = await geminiCategorizeRows(ai, rows);
+          aiEnhanced = true;
+        } catch {
+          /* rule-based fallback */
+        }
+      }
+      res.json({ data: categorized, aiEnhanced, error: null });
+    } catch (e: any) {
+      const rows = req.body?.rows || [];
+      res.json({ data: ruleBasedCategorizeRows(rows), aiEnhanced: false, error: null });
+    }
+  });
+
+  // AI: Compose personalized reminder messages
+  app.post("/api/ai/compose-reminder", authenticateToken, async (req, res) => {
+    try {
+      const ctx = req.body;
+      if (!ctx?.invoiceId) {
+        return res.status(400).json({ error: "invoiceId is required." });
+      }
+      const composed = await composeReminderMessages(ctx);
+      res.json({ data: composed, error: null });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  function buildDemoResponse(query: string, metrics: any): CopilotResponse {
+    return buildDemoCopilotResponse(query, metrics);
+  }
+
+  app.post("/api/copilot", optionalAuth, async (req, res) => {
+    try {
+      const { query, metrics, clients: clientList } = req.body;
+      const user = (req as any).user;
+      const dbClients = readTable("clients");
+      const dbInvoices = readTable("invoices");
 
       if (!ai) {
-        return res.json(buildDemoResponse(query, metrics));
+        const demo = buildDemoCopilotResponse(query, metrics);
+        if (user && demo.action.type !== "none") {
+          const actionResult = await executeCopilotAction(demo.action, user);
+          return res.json({ ...demo, actionResult });
+        }
+        return res.json(demo);
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
-        contents: `You are Vriddhi.Ai, a helpful and highly professional financial copilot for an Indian SMB.
-The available workspace tabs/pages and their IDs are:
-- 'dashboard': General Dashboard, revenues, profits, overall business metrics, dashboard summary.
-- 'reports': Cash Flow Forecast, Cash Runway Diagnostics, projections, future trends, runway alerts.
-- 'documents': Documents OCR, invoice scanner, receipt extraction, upload bills/invoice scans, OCR parser.
-- 'invoices': GST Invoices, client invoices, generate new invoice, billing, view CGST/SGST/IGST list.
-- 'transactions': Transactions, ledger list, general ledger, cash statement, CSV import, record payments/expenses.
-- 'receivables': Receivables & Payables, outstanding dues, overdue invoices, vendor bills.
-- 'clients': Clients & Vendors, master parties, customers, suppliers, client contact database.
-- 'settings': Admin Panel, corporate settings, workspace profile, user role permissions, notification logs.
+        model: GEMINI_MODEL,
+        contents: `You are Vriddhi.Ai, an action-capable financial copilot for an Indian SMB GST app.
 
-Current Business Metrics context: ${JSON.stringify(metrics, null, 2)}
-User Query: "${query}"
+Workspace tabs: dashboard, reports, documents, invoices, transactions, receivables, clients, settings
 
-Your task is to:
-1. Provide a direct, highly professional, analytical, and short actionable response to the query. Keep it under 3 sentences. Use bold text for key numbers or metrics.
-2. Determine if the user is asking to go to, open, switch to, navigate to, or view one of the specific pages/components listed above. If so, return that page ID as "navigateTo". If not, return null.
+Clients (sample): ${JSON.stringify((clientList || dbClients).slice(0, 15).map((c: any) => ({ id: c.id, name: c.name })))}
+Overdue invoices (sample): ${JSON.stringify(
+          dbInvoices
+            .filter((i: any) => i.status === "Overdue" || i.status === "Sent")
+            .slice(0, 10)
+            .map((i: any) => ({ id: i.id, amount: i.totalAmount, status: i.status, dueDate: i.dueDate }))
+        )}
 
-Return strictly a raw JSON object (with NO markdown codeblocks, NO text before or after the JSON) following this structure:
+Metrics: ${JSON.stringify(metrics)}
+
+User query: "${query}"
+
+Determine intent and return ONLY raw JSON (no markdown):
 {
-  "answer": "A short, actionable answer/insight.",
-  "navigateTo": "one-of-the-above-page-ids-or-null"
-}`
+  "answer": "short professional answer with **bold** numbers",
+  "navigateTo": "tab id or null",
+  "action": {
+    "type": "none" | "send_overdue_reminders" | "mark_invoice_paid",
+    "params": { "minAmount": 0, "invoiceId": "INV-2026-001" }
+  },
+  "invoiceDraft": {
+    "clientName": "string or null",
+    "clientId": "string or null",
+    "placeOfSupply": "state",
+    "dueInDays": 15,
+    "items": [{"description":"...","hsnSac":"998314","qty":1,"rate":50000,"gstRate":18}],
+    "notes": "optional"
+  }
+}
+
+Rules:
+- If user asks to create/raise/generate an invoice in natural language, fill invoiceDraft and set navigateTo to "invoices". action.type = "none".
+- If user asks to send reminders for overdue invoices, action.type = "send_overdue_reminders". Parse minAmount from "above 1 lakh" etc.
+- If user asks to mark an invoice paid, action.type = "mark_invoice_paid" with invoiceId.
+- Otherwise action.type = "none" and invoiceDraft = null.`,
       });
 
-      let responseText = response.text || "{}";
-      responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-      
-      let resJson = { answer: "", navigateTo: null };
-      try {
-        resJson = JSON.parse(responseText);
-      } catch (parseError) {
-        const answerMatch = responseText.match(/"answer"\s*:\s*"([^"]+)"/);
-        const navMatch = responseText.match(/"navigateTo"\s*:\s*"([^"]+)"/);
-        resJson = {
-          answer: answerMatch ? answerMatch[1] : responseText,
-          navigateTo: (navMatch ? navMatch[1] : null) as any
-        };
+      let copilotResult = parseGeminiJson<CopilotResponse>(response.text || "{}", buildDemoCopilotResponse(query, metrics));
+
+      if (!copilotResult.action) copilotResult.action = { type: "none" };
+      if (copilotResult.invoiceDraft?.items?.length && !copilotResult.navigateTo) {
+        copilotResult.navigateTo = "invoices";
       }
-      res.json(resJson);
+
+      if (user && copilotResult.action?.type && copilotResult.action.type !== "none") {
+        const actionResult = await executeCopilotAction(copilotResult.action, user);
+        copilotResult.answer = `${copilotResult.answer}\n\n${actionResult.summary}`;
+        return res.json({ ...copilotResult, actionResult });
+      }
+
+      res.json(copilotResult);
     } catch (e: any) {
       console.error(e);
       const { query, metrics } = req.body;
-      return res.json(buildDemoResponse(query, metrics));
+      const user = (req as any).user;
+      const demo = buildDemoCopilotResponse(query, metrics);
+      if (user && demo.action.type !== "none") {
+        const actionResult = await executeCopilotAction(demo.action, user);
+        return res.json({ ...demo, actionResult });
+      }
+      return res.json(demo);
     }
   });
 

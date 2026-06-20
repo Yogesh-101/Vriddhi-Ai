@@ -27,6 +27,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useRole } from '../context/RoleContext';
 import { useAuth } from '../context/AuthContext';
+import { categorizeCsvRows } from '../lib/ai-api';
 import { CustomSelect } from './ui/Select';
 
 const INCOME_CATEGORIES = ['Product Sales', 'Services', 'Consulting', 'Other Income'];
@@ -696,7 +697,40 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
   const [parseError, setParseError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [aiCategorizing, setAiCategorizing] = useState(false);
+  const [aiEnhanced, setAiEnhanced] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const runAiCategorization = async (list: any[]) => {
+    if (list.length === 0) return;
+    setAiCategorizing(true);
+    try {
+      const rows = list.map((item, index) => ({
+        index,
+        description: item.description,
+        amount: item.amount,
+        type: item.type as 'income' | 'expense',
+      }));
+      const { rows: categorized, aiEnhanced: enhanced } = await categorizeCsvRows(rows);
+      setAiEnhanced(enhanced);
+      setParsedList((prev) =>
+        prev.map((item, index) => {
+          const cat = categorized.find((c) => c.index === index);
+          if (!cat) return item;
+          return {
+            ...item,
+            category: cat.category,
+            type: cat.type,
+            aiConfidence: cat.confidence,
+            aiReason: cat.reason,
+          };
+        })
+      );
+    } catch {
+      setAiEnhanced(false);
+    }
+    setAiCategorizing(false);
+  };
 
   const handleLoadSample = () => {
     const rawStatement =
@@ -897,6 +931,15 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
     }
 
     setParsedList(results);
+    runAiCategorization(results);
+  };
+
+  const acceptHighConfidence = () => {
+    setParsedList((prev) =>
+      prev.map((item) =>
+        (item.aiConfidence || 0) >= 85 ? { ...item, selected: true } : item
+      )
+    );
   };
 
   const handleImportCommit = () => {
@@ -934,7 +977,7 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
               <h3 className="text-lg font-bold text-[#111827] dark:text-zinc-50 flex items-center gap-2">
                 Bank Statement CSV Importer
                 <Badge className="bg-amber-500/10 text-amber-500 text-[10px] font-mono border-none gap-1 py-0.5">
-                  <Sparkles className="h-3 w-3 inline" /> Auto-Categorization Active
+                  <Sparkles className="h-3 w-3 inline" /> AI Smart Categorization
                 </Badge>
               </h3>
               <p className="text-xs text-[#6B7280] dark:text-zinc-400">Import bank exports seamlessly. System uses context heuristics to map tags instantly.</p>
@@ -1051,17 +1094,46 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="flex justify-between items-center px-1">
+                <div className="flex justify-between items-center px-1 flex-wrap gap-2">
                   <span className="text-xs font-bold text-[#111827] dark:text-zinc-200">
                     Parsed Audit Preview ({parsedList.filter(p => p.selected).length} of {parsedList.length} selected)
                     {fileName && <span className="text-[#6B7280] dark:text-zinc-400 font-normal ml-2">from {fileName}</span>}
+                    {aiEnhanced && (
+                      <Badge className="ml-2 text-[9px] bg-indigo-500/10 text-indigo-600 border-none">Gemini AI</Badge>
+                    )}
                   </span>
-                  <button
-                    onClick={() => { setParsedList([]); setCsvRaw(''); setFileName(null); setParseError(null); }}
-                    className="text-xs text-[#6B7280] dark:text-zinc-400 hover:text-rose-500 dark:hover:text-rose-400 hover:underline transition-colors"
-                  >
-                    Clear & Start Over
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {aiCategorizing && (
+                      <span className="text-[10px] text-emerald-600 animate-pulse flex items-center gap-1">
+                        <Sparkles className="h-3 w-3" /> AI categorizing…
+                      </span>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={aiCategorizing}
+                      onClick={() => runAiCategorization(parsedList)}
+                      className="text-[10px] h-7"
+                    >
+                      Re-run AI
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={acceptHighConfidence}
+                      className="text-[10px] h-7"
+                    >
+                      Select ≥85% confidence
+                    </Button>
+                    <button
+                      onClick={() => { setParsedList([]); setCsvRaw(''); setFileName(null); setParseError(null); setAiEnhanced(false); }}
+                      className="text-xs text-[#6B7280] dark:text-zinc-400 hover:text-rose-500 hover:underline"
+                    >
+                      Clear
+                    </button>
+                  </div>
                 </div>
 
                 <div className="overflow-y-auto max-h-64 border border-[#E5E7EB] dark:border-zinc-800 rounded-2xl">
@@ -1069,10 +1141,11 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
                     <TableHeader className="bg-gray-50 dark:bg-zinc-950">
                       <TableRow className="border-[#E5E7EB] dark:border-zinc-800">
                         <TableHead className="w-10"></TableHead>
-                        <TableHead className="text-[10px] font-bold text-[#6B7280] dark:text-zinc-500 uppercase">Date</TableHead>
-                        <TableHead className="text-[10px] font-bold text-[#6B7280] dark:text-zinc-500 uppercase">Description</TableHead>
-                        <TableHead className="text-[10px] font-bold text-[#6B7280] dark:text-zinc-500 uppercase">Heuristic Category</TableHead>
-                        <TableHead className="text-[10px] font-bold text-[#6B7280] dark:text-zinc-500 uppercase text-right">Flow (₹)</TableHead>
+                        <TableHead className="text-[10px] font-bold text-[#6B7280] uppercase">Date</TableHead>
+                        <TableHead className="text-[10px] font-bold text-[#6B7280] uppercase">Description</TableHead>
+                        <TableHead className="text-[10px] font-bold text-[#6B7280] uppercase">AI Category</TableHead>
+                        <TableHead className="text-[10px] font-bold text-[#6B7280] uppercase">Confidence</TableHead>
+                        <TableHead className="text-[10px] font-bold text-[#6B7280] uppercase text-right">Flow (₹)</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1088,8 +1161,13 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
                               className="h-4 w-4 rounded accent-emerald-500 cursor-pointer"
                             />
                           </TableCell>
-                          <TableCell className="font-mono text-xs text-[#6B7280] dark:text-zinc-400 py-2.5">{item.date}</TableCell>
-                          <TableCell className="font-semibold text-xs text-[#111827] dark:text-zinc-100 py-2.5">{item.description}</TableCell>
+                          <TableCell className="font-mono text-xs text-[#6B7280] py-2.5">{item.date}</TableCell>
+                          <TableCell className="py-2.5">
+                            <div className="font-semibold text-xs text-[#111827] dark:text-zinc-100">{item.description}</div>
+                            {item.aiReason && (
+                              <div className="text-[9px] text-[#6B7280] dark:text-zinc-500 mt-0.5 italic">{item.aiReason}</div>
+                            )}
+                          </TableCell>
                           <TableCell className="py-2.5">
                             <CustomSelect
                               value={item.category}
@@ -1104,7 +1182,20 @@ function CsvBankImporter({ onClose, onImport, clientsVendors, userRole }: CsvImp
                               className="w-full"
                             />
                           </TableCell>
-                          <TableCell className={`text-right font-mono font-bold text-xs py-2.5 ${item.type === 'income' ? 'text-emerald-500' : 'text-rose-500 dark:text-rose-400'}`}>
+                          <TableCell className="py-2.5">
+                            {item.aiConfidence != null ? (
+                              <Badge className={`text-[9px] border-none ${
+                                item.aiConfidence >= 85 ? 'bg-emerald-500/10 text-emerald-600' :
+                                item.aiConfidence >= 70 ? 'bg-amber-500/10 text-amber-600' :
+                                'bg-gray-500/10 text-gray-600'
+                              }`}>
+                                {item.aiConfidence}%
+                              </Badge>
+                            ) : (
+                              <span className="text-[9px] text-gray-400">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className={`text-right font-mono font-bold text-xs py-2.5 ${item.type === 'income' ? 'text-emerald-500' : 'text-rose-500'}`}>
                             {item.type === 'income' ? '+' : '-'}₹{Math.abs(item.amount).toLocaleString()}
                           </TableCell>
                         </TableRow>

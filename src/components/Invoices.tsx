@@ -8,6 +8,15 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, Search, FileText, Download, Mail, ArrowRight, Printer, Sparkles, Building, Briefcase, Calendar, Phone, Copy, Eye, Trash2, MessageSquare, AlertTriangle, RefreshCw, Send } from 'lucide-react';
 import { CustomSelect } from './ui/Select';
 import { useAuth } from '../context/AuthContext';
+import {
+  auditGstInvoice,
+  draftInvoiceFromText,
+  composeReminder,
+  INVOICE_DRAFT_EVENT,
+  DATA_REFRESH_EVENT,
+  type GstAuditResult,
+  type InvoiceDraft,
+} from '../lib/ai-api';
 
 export interface InvoiceItem {
   description: string;
@@ -239,6 +248,10 @@ export function Invoices() {
 
   const [placeOfSupply, setPlaceOfSupply] = useState('Maharashtra');
   const [clientGSTIN, setClientGSTIN] = useState('');
+  const [gstAudit, setGstAudit] = useState<GstAuditResult | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [nlInvoiceQuery, setNlInvoiceQuery] = useState('');
+  const [nlDraftLoading, setNlDraftLoading] = useState(false);
 
   // Temporary row builders
   const [itemDesc, setItemDesc] = useState('');
@@ -261,6 +274,44 @@ export function Invoices() {
       setPlaceOfSupply(target.state);
     }
   };
+
+  const applyInvoiceDraft = (draft: InvoiceDraft) => {
+    if (draft.clientId) {
+      handleClientChange(draft.clientId);
+    } else if (draft.clientName) {
+      const match = clientsVendors.find(
+        (c) => c.name.toLowerCase() === draft.clientName!.toLowerCase()
+      );
+      if (match) handleClientChange(match.id);
+    }
+    if (draft.placeOfSupply) setPlaceOfSupply(draft.placeOfSupply);
+    if (draft.items?.length) setItems(draft.items);
+    if (draft.dueInDays) {
+      const d = new Date();
+      d.setDate(d.getDate() + draft.dueInDays);
+      setDueDate(d.toISOString().split('T')[0]);
+    }
+    setIsModalOpen(true);
+    showToast(draft.notes || 'AI invoice draft loaded — review GST compliance and issue.');
+  };
+
+  useEffect(() => {
+    const onDraft = (e: Event) => {
+      applyInvoiceDraft((e as CustomEvent<InvoiceDraft>).detail);
+    };
+    const onRefresh = async () => {
+      const { data } = await supabase.from('invoices').select('*').order('date', { ascending: false });
+      if (data) setInvoices(data);
+      const { data: logs } = await supabase.from('notification_logs').select('*');
+      if (logs) setTriggerLogs(logs);
+    };
+    window.addEventListener(INVOICE_DRAFT_EVENT, onDraft);
+    window.addEventListener(DATA_REFRESH_EVENT, onRefresh);
+    return () => {
+      window.removeEventListener(INVOICE_DRAFT_EVENT, onDraft);
+      window.removeEventListener(DATA_REFRESH_EVENT, onRefresh);
+    };
+  }, [clientsVendors]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addInvoice = async (invoice: any) => {
     const withId = invoice.id ? invoice : { ...invoice, id: generateInvoiceNumber(invoices) };
@@ -292,9 +343,39 @@ export function Invoices() {
     channels: ('Email' | 'Telegram' | 'WhatsApp')[];
     recipientEmail?: string;
     recipientPhone?: string;
+    level?: number;
+    skipAiCompose?: boolean;
   }) => {
+    let finalPayload = { ...payload };
+    if (!payload.skipAiCompose) {
+      try {
+        const inv = invoices.find((i) => i.id === payload.invoiceId);
+        const daysOverdue =
+          inv?.dueDate
+            ? Math.max(0, Math.floor((Date.now() - new Date(inv.dueDate).getTime()) / 86400000))
+            : 0;
+        const composed = await composeReminder({
+          type: payload.type,
+          level: payload.level || 1,
+          invoiceId: payload.invoiceId,
+          clientName: payload.clientName,
+          amount: inv?.totalAmount || 0,
+          dueDate: inv?.dueDate,
+          daysOverdue,
+        });
+        finalPayload = {
+          ...payload,
+          message: composed.emailBody,
+          emailBody: composed.emailBody,
+          whatsappBody: composed.whatsappBody,
+          subject: composed.subject,
+        };
+      } catch {
+        /* use original message */
+      }
+    }
     try {
-      const json = await sendNotification(payload);
+      const json = await sendNotification(finalPayload);
       if (json.data?.length) {
         setTriggerLogs(prev => [...json.data, ...prev]);
       }
@@ -355,10 +436,11 @@ export function Invoices() {
       type: 'escalation',
       invoiceId: id,
       clientName: client?.name || 'Client',
-      message: `Level ${level} escalation — Invoice ${id}: ${ESCALATION_MESSAGES[level]}`,
+      message: `Level ${level} escalation — Invoice ${id}`,
       channels: methods.length ? methods : ['Email', 'WhatsApp', 'Telegram'],
       recipientEmail: client?.email,
       recipientPhone: client?.phone,
+      level,
     });
     showToast(`Escalation L${level} dispatched for invoice ${id}`);
   };
@@ -415,7 +497,32 @@ export function Invoices() {
     };
   }, [items, placeOfSupply, gstState.sellerState]);
 
-  const handleCreateAndSave = (status: 'Draft' | 'Sent' | 'Paid') => {
+  useEffect(() => {
+    if (!isModalOpen || items.length === 0) {
+      setGstAudit(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setAuditLoading(true);
+      try {
+        const result = await auditGstInvoice({
+          clientGSTIN,
+          placeOfSupply,
+          items,
+          ...totals,
+          date,
+          dueDate,
+        });
+        setGstAudit(result);
+      } catch {
+        setGstAudit(null);
+      }
+      setAuditLoading(false);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [isModalOpen, clientGSTIN, placeOfSupply, items, totals, date, dueDate]);
+
+  const handleCreateAndSave = async (status: 'Draft' | 'Sent' | 'Paid') => {
     if (!clientId) {
       alert("Please select a master client record to bill.");
       return;
@@ -423,6 +530,29 @@ export function Invoices() {
     if (items.length === 0) {
       alert("At least one line item is required to raise invoices.");
       return;
+    }
+
+    if (status === 'Sent') {
+      try {
+        const audit = await auditGstInvoice({
+          clientGSTIN,
+          placeOfSupply,
+          items,
+          ...totals,
+          date,
+          dueDate,
+        });
+        setGstAudit(audit);
+        if (!audit.passed) {
+          const errors = audit.issues.filter((i) => i.severity === 'error');
+          if (errors.length > 0) {
+            alert(`GST compliance blocked: ${errors[0].message}\n\nFix issues before issuing (Score: ${audit.score}/100).`);
+            return;
+          }
+        }
+      } catch {
+        /* proceed if audit service unavailable */
+      }
     }
 
     const irn = status !== 'Draft' ? generateIRN() : undefined;
@@ -455,7 +585,7 @@ export function Invoices() {
         type: 'delivery',
         invoiceId: newInvoice.id,
         clientName: client?.name || 'Client',
-        message: `New invoice ${newInvoice.id} generated and delivered to ${client?.email || 'client'}. Amount: ₹${totals.totalAmount.toLocaleString()}`,
+        message: `New invoice ${newInvoice.id} generated.`,
         channels: ['Email', 'WhatsApp', 'Telegram'],
         recipientEmail: client?.email,
         recipientPhone: client?.phone,
@@ -854,6 +984,53 @@ export function Invoices() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
+               {/* AI Natural Language Invoice Draft */}
+               <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 dark:bg-emerald-950/20 space-y-2">
+                 <div className="flex items-center gap-2 text-xs font-bold text-emerald-700 dark:text-emerald-400">
+                   <Sparkles className="h-4 w-4" /> AI Invoice Draft — describe in plain English
+                 </div>
+                 <div className="flex gap-2">
+                   <input
+                     type="text"
+                     value={nlInvoiceQuery}
+                     onChange={(e) => setNlInvoiceQuery(e.target.value)}
+                     placeholder='e.g. "Invoice Alpha Corp 40 hrs consulting @ ₹5000, due in 15 days"'
+                     className="flex-1 h-9 px-3 text-xs rounded-lg border border-emerald-500/20 bg-white dark:bg-zinc-900 dark:text-zinc-100"
+                     onKeyDown={async (e) => {
+                       if (e.key === 'Enter' && nlInvoiceQuery.trim()) {
+                         setNlDraftLoading(true);
+                         try {
+                           const draft = await draftInvoiceFromText(nlInvoiceQuery);
+                           if (draft) applyInvoiceDraft(draft);
+                           else showToast('Could not parse invoice request.');
+                         } catch {
+                           showToast('AI draft failed — check login and GEMINI_API_KEY.');
+                         }
+                         setNlDraftLoading(false);
+                       }
+                     }}
+                   />
+                   <Button
+                     size="sm"
+                     disabled={nlDraftLoading || !nlInvoiceQuery.trim()}
+                     className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9"
+                     onClick={async () => {
+                       setNlDraftLoading(true);
+                       try {
+                         const draft = await draftInvoiceFromText(nlInvoiceQuery);
+                         if (draft) applyInvoiceDraft(draft);
+                         else showToast('Could not parse invoice request.');
+                       } catch {
+                         showToast('AI draft failed.');
+                       }
+                       setNlDraftLoading(false);
+                     }}
+                   >
+                     {nlDraftLoading ? 'Parsing…' : 'AI Draft'}
+                   </Button>
+                 </div>
+               </div>
+
                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Bill To */}
                   <div className="space-y-3.5 bg-gray-50 dark:bg-zinc-800/30 p-4 rounded-xl border dark:border-zinc-700">
@@ -1126,6 +1303,56 @@ export function Invoices() {
                      </div>
                   </div>
                </div>
+
+               {/* AI GST Compliance Audit */}
+               {(gstAudit || auditLoading) && (
+                 <div className={`p-4 rounded-xl border ${
+                   gstAudit?.passed
+                     ? 'border-emerald-500/30 bg-emerald-500/5'
+                     : 'border-amber-500/30 bg-amber-500/5'
+                 }`}>
+                   <div className="flex items-center justify-between mb-2">
+                     <div className="flex items-center gap-2 text-xs font-bold text-[#111827] dark:text-zinc-100">
+                       <Sparkles className="h-4 w-4 text-[#22C55E]" />
+                       AI GST Compliance Checker
+                       {gstAudit?.aiEnhanced && (
+                         <Badge className="text-[9px] bg-indigo-500/10 text-indigo-600 border-none">Gemini Enhanced</Badge>
+                       )}
+                     </div>
+                     {auditLoading ? (
+                       <span className="text-[10px] text-gray-500 animate-pulse">Auditing…</span>
+                     ) : gstAudit ? (
+                       <Badge className={`text-xs font-mono ${
+                         gstAudit.score >= 85 ? 'bg-emerald-500/10 text-emerald-600' :
+                         gstAudit.score >= 70 ? 'bg-amber-500/10 text-amber-600' :
+                         'bg-rose-500/10 text-rose-600'
+                       } border-none`}>
+                         Score: {gstAudit.score}/100
+                       </Badge>
+                     ) : null}
+                   </div>
+                   {gstAudit && (
+                     <>
+                       <p className="text-xs text-[#6B7280] dark:text-zinc-400 mb-2">{gstAudit.summary}</p>
+                       <div className="space-y-1 max-h-32 overflow-y-auto">
+                         {gstAudit.issues.map((issue, idx) => (
+                           <div key={idx} className={`text-[10px] px-2 py-1 rounded flex gap-2 ${
+                             issue.severity === 'error' ? 'bg-rose-500/10 text-rose-700 dark:text-rose-300' :
+                             issue.severity === 'warning' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' :
+                             'bg-blue-500/10 text-blue-700 dark:text-blue-300'
+                           }`}>
+                             <span className="font-bold uppercase shrink-0">{issue.severity}</span>
+                             <span>{issue.message}</span>
+                           </div>
+                         ))}
+                         {gstAudit.issues.length === 0 && (
+                           <p className="text-[10px] text-emerald-600">All GST checks passed.</p>
+                         )}
+                       </div>
+                     </>
+                   )}
+                 </div>
+               )}
             </div>
 
             <div className="p-4 border-t border-gray-150 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-800/50 flex flex-col sm:flex-row justify-between items-center rounded-b-2xl gap-3">
@@ -1143,8 +1370,9 @@ export function Invoices() {
                  </Button>
 
                  <Button 
-                   className="bg-[#111827] hover:bg-gray-800 text-white dark:bg-[#22C55E] dark:hover:bg-[#16a34a] dark:text-black gap-1.5 text-xs font-bold" 
+                   className="bg-[#111827] hover:bg-gray-800 text-white dark:bg-[#22C55E] dark:hover:bg-[#16a34a] dark:text-black gap-1.5 text-xs font-bold disabled:opacity-50" 
                    onClick={() => handleCreateAndSave('Sent')}
+                   disabled={auditLoading || (gstAudit !== null && !gstAudit.passed && gstAudit.issues.some(i => i.severity === 'error'))}
                  >
                     <Send className="h-4 w-4" /> Issue and Dispatch
                  </Button>
